@@ -4,6 +4,8 @@
                 factoryClass="org.jetbrains.plugins.terminal.TerminalToolWindowFactory"
                 secondary="false"
                 canCloseContents="true"/>
+    <toolWindow id="Claude Sessions" anchor="right" icon="/icons/rebased/claudeSessions.svg"
+                showStripeButton="true" factoryClass="org.jetbrains.plugins.terminal.claude.ClaudeSessionsToolWindowFactory"/>
     <fileEditorProvider id="classic-terminal-session-editor"
                         implementation="org.jetbrains.plugins.terminal.vfs.ClassicTerminalSessionEditorProvider"/>
 
