@@ -1152,14 +1152,10 @@ open class EditorsSplitters internal constructor(
    * non-lightedit project participates; other splitters (search results popups, previews) keep the stock behavior.
    */
   private fun updateOnDemandVisibility() {
-    if (!hideEditorAreaWhenEmpty) return
-    if (manager.project.isDefault) return
-    if (LightEdit.owns(manager.project)) return
-    if (manager.initJob.isCompleted && this !== manager.mainSplitters) return
-    val shouldBeVisible = !showEmptyText()
-    if (isVisible != shouldBeVisible) {
-      isVisible = shouldBeVisible
-    }
+    // Rebased: the main editor area is now hosted inside the "File Editor" tool window, which owns its
+    // visibility (stripe-button toggle, show on file open, hide on last close). Hiding the splitters
+    // component itself would only blank out the visible tool window, so this is intentionally inert now;
+    // the rich empty state stays suppressed via shouldShowRichEmptyState().
   }
 
   private fun rebuildEmptyStateComponent() {
