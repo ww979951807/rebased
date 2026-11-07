@@ -1,7 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.plugins.terminal.claude
 
-import com.google.gson.JsonParser
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
@@ -10,6 +9,7 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -17,7 +17,10 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
+import com.intellij.ui.content.ContentManagerEvent
+import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.ui.JBPopupMenu
 import org.jetbrains.plugins.terminal.ShellTerminalWidget
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.awt.Component
@@ -30,6 +33,7 @@ import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JList
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
@@ -52,7 +56,9 @@ internal data class ClaudeSessionInfo(val id: String, val title: String, val las
 internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWindowPanel(true) {
   private val listModel = DefaultListModel<ClaudeSessionInfo>()
   private val list = JBList(listModel)
-  private val openTabs = HashMap<String, Content>()
+  private val summaryRegex = Regex("\"summary\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+  private val textRegex = Regex("\"type\"\\s*:\\s*\"text\"\\s*,\\s*\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+  private val typeRegex = Regex("\"type\"\\s*:\\s*\"(\\w+)\"")
 
   init {
     toolbar = buildToolbar().component
@@ -60,14 +66,23 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     list.cellRenderer = SessionRenderer()
     list.addMouseListener(object : MouseAdapter() {
       override fun mouseClicked(e: MouseEvent) {
+        val index = list.locationToIndex(e.point)
+        if (index < 0 || listModel.size() <= index) return
         if (SwingUtilities.isLeftMouseButton(e)) {
-          val index = list.locationToIndex(e.point)
-          if (index >= 0 && listModel.size() > index) {
-            openSession(listModel[index])
-          }
+          openSession(listModel[index])
+        }
+        else if (SwingUtilities.isRightMouseButton(e)) {
+          list.selectedIndex = index
+          showContextMenu(e, listModel[index])
         }
       }
     })
+    runCatching {
+      TerminalToolWindowManager.getInstance(project).toolWindow?.addContentManagerListener(object : ContentManagerListener {
+        override fun contentRemoved(event: ContentManagerEvent) = list.repaint()
+        override fun contentAdded(event: ContentManagerEvent) = list.repaint()
+      })
+    }
     refresh()
   }
 
@@ -93,14 +108,15 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   }
 
   private fun readSessions(): List<ClaudeSessionInfo> {
-    val basePath = project.basePath ?: return emptyList()
-    val slug = basePath.replace(Regex("[^A-Za-z0-9]"), "-")
-    val dir = File(System.getProperty("user.home"), ".claude/projects/$slug")
+    val dir = projectDir()
     if (!dir.isDirectory) return emptyList()
     val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: return emptyList()
     return files.asSequence()
       .filter { it.length() > 0 }
-      .map { f -> ClaudeSessionInfo(f.name.removeSuffix(".jsonl"), extractTitle(f) ?: "(no title)", f.lastModified()) }
+      .map { f ->
+        val id = f.name.removeSuffix(".jsonl")
+        ClaudeSessionInfo(id, titleOverride(id) ?: extractTitle(f) ?: "(no title)", f.lastModified())
+      }
       .sortedByDescending { it.lastModified }
       .toList()
   }
@@ -110,16 +126,19 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     runCatching {
       file.useLines { lines ->
         for (line in lines.take(300)) {
-          val obj = runCatching { JsonParser.parseString(line).asJsonObject }.getOrNull() ?: continue
-          val type = obj.get("type")?.takeIf { it.isJsonPrimitive }?.asString
+          val type = typeRegex.find(line)?.groupValues?.get(1)
           if (type == "summary") {
-            val s = obj.get("summary")?.takeIf { it.isJsonPrimitive }?.asString
-            if (!s.isNullOrBlank()) return s.trim().replace(Regex("\\s+"), " ").take(60)
+            val s = summaryRegex.find(line)?.groupValues?.get(1)
+            if (!s.isNullOrBlank()) return unescape(s).trim().replace(Regex("\\s+"), " ").take(60)
           }
           if (firstUser == null && type == "user") {
-            val text = extractUserText(obj)
-            if (!text.isNullOrBlank() && !text.startsWith("<")) {
-              firstUser = text.trim().replace(Regex("\\s+"), " ").take(60)
+            val raw = textRegex.find(line)?.groupValues?.get(1)
+              ?: stringContent(line)
+            if (raw != null) {
+              val text = unescape(raw).trim().replace(Regex("\\s+"), " ")
+              if (text.isNotEmpty() && !text.startsWith("<")) {
+                firstUser = text.take(60)
+              }
             }
           }
         }
@@ -128,15 +147,55 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     return firstUser
   }
 
-  private fun extractUserText(obj: com.google.gson.JsonObject): String? {
-    val content = obj.getAsJsonObject("message")?.get("content") ?: return null
-    return when {
-      content.isJsonPrimitive -> content.asString
-      content.isJsonArray -> content.asJsonArray
-        .filter { it.isJsonObject && it.asJsonObject.get("type")?.asString == "text" }
-        .firstNotNullOfOrNull { it.asJsonObject.get("text")?.takeIf { t -> t.isJsonPrimitive }?.asString }
-      else -> null
+  private fun stringContent(line: String): String? {
+    if (!line.contains("\"role\"\\s*:\\s*\"user\"".toRegex())) return null
+    val m = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(line) ?: return null
+    return m.groupValues.getOrNull(1)
+  }
+
+  private fun unescape(s: String): String {
+    val sb = StringBuilder(s.length)
+    var i = 0
+    while (i < s.length) {
+      val c = s[i]
+      if (c == '\\' && i + 1 < s.length) {
+        when (val n = s[i + 1]) {
+          'n' -> { sb.append('\n'); i += 2 }
+          't' -> { sb.append('\t'); i += 2 }
+          'r' -> { sb.append('\r'); i += 2 }
+          '"' -> { sb.append('"'); i += 2 }
+          '\\' -> { sb.append('\\'); i += 2 }
+          '/' -> { sb.append('/'); i += 2 }
+          'u' -> {
+            val code = if (i + 6 <= s.length) s.substring(i + 2, i + 6).toIntOrNull(16) else null
+            if (code != null) { sb.append(code.toChar()); i += 6 } else { sb.append(n); i += 2 }
+          }
+          else -> { sb.append(n); i += 2 }
+        }
+      }
+      else {
+        sb.append(c)
+        i++
+      }
     }
+    return sb.toString()
+  }
+
+  private fun projectDir(): File {
+    val cfg = File(System.getProperty("user.home"), ".claude/projects")
+    val slug = (project.basePath ?: "").replace(Regex("[^A-Za-z0-9]"), "-")
+    return File(cfg, slug)
+  }
+
+  private fun sessionFile(id: String) = File(projectDir(), "$id.jsonl")
+
+  private fun isSessionOpen(id: String): Boolean =
+    openClaudeContent(id) != null
+
+  private fun openClaudeContent(id: String): Content? {
+    val shortId = id.take(8)
+    val tw = TerminalToolWindowManager.getInstance(project).toolWindow ?: return null
+    return tw.contentManager.contents.firstOrNull { it.displayName == "claude:$shortId" }
   }
 
   private fun openSession(info: ClaudeSessionInfo) = openClaude("claude:${info.id.take(8)}", "claude --resume ${info.id}")
@@ -144,26 +203,93 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   private fun openClaude(tabName: String, command: String) {
     val manager = TerminalToolWindowManager.getInstance(project)
     val toolWindow = manager.toolWindow
-    val shortId = tabName.removePrefix("claude:")
-    val existing = openTabs[shortId]?.takeIf { !it.isDisposed }
-                    ?: toolWindow?.contentManager?.contents?.firstOrNull { it.displayName == tabName }
+    val existing = toolWindow?.contentManager?.contents?.firstOrNull { it.displayName == tabName }
     if (existing != null) {
-      openTabs[shortId] = existing
       toolWindow.activate {
         toolWindow.contentManager.setSelectedContent(existing, true)
       }
       return
     }
     ApplicationManager.getApplication().invokeLater {
-      val widget: ShellTerminalWidget = runCatching {
-        manager.createLocalShellWidget(project.basePath, tabName)
-      }.getOrNull() ?: return@invokeLater
-      val content = manager.toolWindow?.contentManager?.contents
-        ?.firstOrNull { it.displayName == tabName || it.component.components.any { c -> c == widget.component.parent } }
-      if (content != null) {
-        openTabs[shortId] = content
+      runCatching {
+        val widget: ShellTerminalWidget = manager.createLocalShellWidget(project.basePath, tabName) ?: return@invokeLater
+        widget.executeCommand(command)
       }
-      runCatching { widget.executeCommand(command) }
+      list.repaint()
+    }
+  }
+
+  private fun showContextMenu(e: MouseEvent, info: ClaudeSessionInfo) {
+    val menu = JBPopupMenu()
+    menu.add(JMenuItem("Open Session").apply {
+      addActionListener { openSession(info) }
+    })
+    menu.add(JMenuItem("Rename").apply {
+      addActionListener {
+        val input = Messages.showInputDialog(project, "Session title:", "Rename Session",
+                                             Messages.getQuestionIcon(), info.title, null) ?: return@addActionListener
+        val trimmed = input.trim()
+        if (trimmed.isEmpty()) return@addActionListener
+        setTitleOverride(info.id, trimmed)
+        refresh()
+      }
+    })
+    menu.add(JMenuItem("Reset Title").apply {
+      addActionListener {
+        setTitleOverride(info.id, null)
+        refresh()
+      }
+    })
+    menu.addSeparator()
+    menu.add(JMenuItem("Delete").apply {
+      addActionListener {
+        val answer = Messages.showYesNoDialog(project,
+          "Delete this Claude session?\n\n${info.title}\n${info.id.take(8)}",
+          "Delete Session", Messages.getQuestionIcon())
+        if (answer != Messages.YES) return@addActionListener
+        runCatching { sessionFile(info.id).delete() }
+        val content = openClaudeContent(info.id)
+        if (content != null) {
+          runCatching { content.manager?.removeContent(content) }
+        }
+        refresh()
+      }
+    })
+    menu.show(list, e.x, e.y)
+  }
+
+  private fun titleOverride(id: String): String? {
+    val f = File(projectDir(), "claude-session-titles.txt")
+    if (!f.isFile) return null
+    runCatching {
+      f.useLines { lines ->
+        for (line in lines) {
+          val idx = line.indexOf('=')
+          if (idx > 0 && line.substring(0, idx) == id) {
+            val v = line.substring(idx + 1)
+            if (v.isNotEmpty()) return v
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  private fun setTitleOverride(id: String, title: String?) {
+    val f = File(projectDir(), "claude-session-titles.txt")
+    val existing = LinkedHashMap<String, String>()
+    runCatching {
+      if (f.isFile) f.useLines { lines ->
+        for (line in lines) {
+          val idx = line.indexOf('=')
+          if (idx > 0) existing[line.substring(0, idx)] = line.substring(idx + 1)
+        }
+      }
+    }
+    if (title == null) existing.remove(id) else existing[id] = title
+    runCatching {
+      f.parentFile.mkdirs()
+      f.writeText(existing.entries.joinToString("\n") { "${it.key}=${it.value}" })
     }
   }
 
@@ -173,7 +299,8 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       val info = value as? ClaudeSessionInfo
       if (info != null && component is JLabel) {
         val time = SimpleDateFormat("MM-dd HH:mm").format(Date(info.lastModified))
-        component.text = "<html><b>${escapeHtml(info.title)}</b>&nbsp;&nbsp;" +
+        val dot = if (isSessionOpen(info.id)) "<span style='color:#57965C;'>&#9679;</span>&nbsp;" else ""
+        component.text = "<html>$dot<b>${escapeHtml(info.title)}</b>&nbsp;&nbsp;" +
                          "<span style='color:gray;'>${time}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></html>"
         component.horizontalTextPosition = SwingConstants.LEFT
       }
