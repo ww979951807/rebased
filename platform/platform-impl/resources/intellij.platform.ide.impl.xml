@@ -410,6 +410,8 @@
     <extensionPoint qualifiedName="com.intellij.diagnostic.freezeNotifier" interface="com.intellij.diagnostic.FreezeNotifier" dynamic="true"/>
   </extensionPoints>
   <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="File Editor" anchor="right" canCloseContents="false" icon="/icons/rebased/editorArea.svg"
+                showStripeButton="true" factoryClass="com.intellij.openapi.fileEditor.impl.FileEditorToolWindowFactory"/>
     <iw.actionProvider implementation="com.intellij.openapi.editor.impl.multiverse.CodeInsightContextSwitcherProvider"/>
     <applicationService serviceImplementation="com.intellij.openapi.updateSettings.UpdateStrategyCustomization" open="true"/>
     <applicationService serviceInterface="com.intellij.toolWindow.DefaultToolWindowLayoutProvider" open="true"
