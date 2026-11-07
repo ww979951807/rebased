@@ -20,7 +20,6 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
-import com.intellij.util.ui.JBPopupMenu
 import org.jetbrains.plugins.terminal.ShellTerminalWidget
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.awt.Component
@@ -34,6 +33,7 @@ import javax.swing.DefaultListModel
 import javax.swing.JList
 import javax.swing.JLabel
 import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
@@ -220,7 +220,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   }
 
   private fun showContextMenu(e: MouseEvent, info: ClaudeSessionInfo) {
-    val menu = JBPopupMenu()
+    val menu = JPopupMenu()
     menu.add(JMenuItem("Open Session").apply {
       addActionListener { openSession(info) }
     })
@@ -250,7 +250,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
         runCatching { sessionFile(info.id).delete() }
         val content = openClaudeContent(info.id)
         if (content != null) {
-          runCatching { content.manager?.removeContent(content) }
+          runCatching { content.manager?.removeContent(content, true) }
         }
         refresh()
       }
