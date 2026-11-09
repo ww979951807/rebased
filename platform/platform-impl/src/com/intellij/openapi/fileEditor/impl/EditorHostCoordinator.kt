@@ -63,10 +63,12 @@ internal class EditorHostCoordinator(private val project: Project) : Disposable 
 
   // Entry-point guarantee: reopening an already-open, already-selected file produces no
   // fileOpened/selectionChanged events, so show the host explicitly from openFile calls.
+  // No visibility gating here: the deferred run may execute before the opened file is
+  // registered, so checking hasOpenFiles() would race and miss the first-ever open.
   fun ensureShown() {
     val tw = toolWindow ?: return
     ToolWindowManager.getInstance(project).invokeLater {
-      if (FileEditorManager.getInstance(project).hasOpenFiles() && !tw.isVisible) {
+      if (!tw.isVisible) {
         tw.show(null)
       }
     }
