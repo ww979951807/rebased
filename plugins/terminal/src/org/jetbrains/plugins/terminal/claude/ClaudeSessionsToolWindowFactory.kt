@@ -279,7 +279,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     val workDir = project.basePath
     ApplicationManager.getApplication().invokeLater {
       var started = false
-      if (TerminalOptionsProvider.getInstance().terminalEngine == TerminalEngine.REWORKED) {
+      if (TerminalOptionsProvider.instance.terminalEngine == TerminalEngine.REWORKED) {
         started = runCatching { project.getService(ReworkedTabCommandRunner::class.java) }
           .getOrNull()?.createTabAndRunCommand(project, workDir, tabName, command) ?: false
       }
