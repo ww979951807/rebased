@@ -5,14 +5,20 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.SimpleColoredComponent
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.Content
@@ -20,9 +26,16 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import org.jetbrains.plugins.terminal.ReworkedTabCommandRunner
 import org.jetbrains.plugins.terminal.ShellTerminalWidget
+import org.jetbrains.plugins.terminal.TerminalEngine
+import org.jetbrains.plugins.terminal.TerminalOptionsProvider
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
+import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.GridLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
@@ -31,13 +44,10 @@ import java.util.Date
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JList
-import javax.swing.JLabel
-import javax.swing.JMenuItem
-import javax.swing.JPopupMenu
-import javax.swing.SwingConstants
+import javax.swing.JPanel
+import javax.swing.ListCellRenderer
 import javax.swing.SwingUtilities
 
 internal class ClaudeSessionsToolWindowFactory : ToolWindowFactory, DumbAware {
@@ -241,8 +251,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   private fun openSession(info: ClaudeSessionInfo) = openClaude("claude:${info.id.take(8)}", "claude --resume ${info.id}")
 
   private fun openClaude(tabName: String, command: String) {
-    val manager = TerminalToolWindowManager.getInstance(project)
-    val toolWindow = manager.toolWindow
+    val toolWindow = TerminalToolWindowManager.getInstance(project).toolWindow
     val existing = toolWindow?.contentManager?.contents?.firstOrNull { it.displayName == tabName }
     if (existing != null) {
       toolWindow.activate {
@@ -250,13 +259,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       }
       return
     }
-    ApplicationManager.getApplication().invokeLater {
-      runCatching {
-        val widget: ShellTerminalWidget = manager.createLocalShellWidget(project.basePath, tabName) ?: return@invokeLater
-        widget.executeCommand(command)
-      }
-      list.repaint()
-    }
+    startCommand(tabName, command)
   }
 
   private fun rerunSession(info: ClaudeSessionInfo) {
@@ -266,11 +269,26 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     if (existing != null) {
       runCatching { existing.manager?.removeContent(existing, true) }
     }
+    startCommand(tabName, "claude --resume ${info.id}")
+  }
+
+  // Follow the Terminal Engine setting: REWORKED goes through the frontend-module runner
+  // (Reworked engine renderer), anything else uses the classic API. Falls back to classic
+  // when the frontend service is unavailable.
+  private fun startCommand(tabName: String, command: String) {
+    val workDir = project.basePath
     ApplicationManager.getApplication().invokeLater {
-      runCatching {
-        val widget: ShellTerminalWidget = TerminalToolWindowManager.getInstance(project)
-          .createLocalShellWidget(project.basePath, tabName) ?: return@invokeLater
-        widget.executeCommand("claude --resume ${info.id}")
+      var started = false
+      if (TerminalOptionsProvider.getInstance().terminalEngine == TerminalEngine.REWORKED) {
+        started = runCatching { project.getService(ReworkedTabCommandRunner::class.java) }
+          .getOrNull()?.createTabAndRunCommand(project, workDir, tabName, command) ?: false
+      }
+      if (!started) {
+        runCatching {
+          val widget: ShellTerminalWidget = TerminalToolWindowManager.getInstance(project)
+            .createLocalShellWidget(workDir, tabName) ?: return@invokeLater
+          widget.executeCommand(command)
+        }
       }
       list.repaint()
     }
@@ -305,33 +323,33 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   }
 
   private fun showContextMenu(e: MouseEvent, info: ClaudeSessionInfo) {
-    val menu = JPopupMenu()
-    menu.add(JMenuItem("Rerun").apply {
-      addActionListener { rerunSession(info) }
+    val group = DefaultActionGroup()
+    group.add(object : AnAction("Rerun", "Reopen this session in a new terminal tab", AllIcons.Actions.Rerun) {
+      override fun actionPerformed(e: AnActionEvent) = rerunSession(info)
     })
-    menu.add(JMenuItem("Rename").apply {
-      addActionListener {
+    group.add(object : AnAction("Rename", "Set a custom title for this session", AllIcons.Actions.Edit) {
+      override fun actionPerformed(e: AnActionEvent) {
         val input = Messages.showInputDialog(project, "Session title:", "Rename Session",
-                                             Messages.getQuestionIcon(), info.title, null) ?: return@addActionListener
+                                             Messages.getQuestionIcon(), info.title, null) ?: return@actionPerformed
         val trimmed = input.trim()
-        if (trimmed.isEmpty()) return@addActionListener
+        if (trimmed.isEmpty()) return@actionPerformed
         setTitleOverride(info.id, trimmed)
         refresh()
       }
     })
-    menu.add(JMenuItem("Reset Title").apply {
-      addActionListener {
+    group.add(object : AnAction("Reset Title", "Remove the custom title", AllIcons.Actions.Rollback) {
+      override fun actionPerformed(e: AnActionEvent) {
         setTitleOverride(info.id, null)
         refresh()
       }
     })
-    menu.addSeparator()
-    menu.add(JMenuItem("Delete").apply {
-      addActionListener {
+    group.addSeparator()
+    group.add(object : AnAction("Delete", "Delete this session", AllIcons.Actions.GC) {
+      override fun actionPerformed(e: AnActionEvent) {
         val answer = Messages.showYesNoDialog(project,
           "Delete this Claude session?\n\n${info.title}\n${info.id.take(8)}",
           "Delete Session", Messages.getQuestionIcon())
-        if (answer != Messages.YES) return@addActionListener
+        if (answer != Messages.YES) return@actionPerformed
         runCatching { sessionFile(info.id).delete() }
         val content = openClaudeContent(info.id)
         if (content != null) {
@@ -340,7 +358,10 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
         refresh()
       }
     })
-    menu.show(list, e.x, e.y)
+    val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+      null, group, DataManager.getInstance().getDataContext(list),
+      JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false)
+    popup.show(RelativePoint(e))
   }
 
   private fun titleOverride(id: String): String? {
@@ -378,20 +399,41 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     }
   }
 
-  private inner class SessionRenderer : DefaultListCellRenderer() {
-    override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, selected: Boolean, focused: Boolean): Component {
-      val component = super.getListCellRendererComponent(list, value, index, selected, focused)
-      val info = value as? ClaudeSessionInfo
-      if (info != null && component is JLabel) {
-        val time = SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date(info.lastModified))
-        val size = formatSize(info.sizeBytes)
-        val dot = if (isSessionOpen(info.id)) "<span style='color:#57965C;'>&#9679;</span>&nbsp;" else ""
-        val badge = "<span style='font-size:90%;color:#888888;'>&nbsp;${info.messageCount}msg</span>"
-        component.text = "<html><div style='padding:6px 8px;'>$dot<b>${escapeHtml(info.title)}</b>$badge<br>" +
-                         "<span style='color:gray;font-size:90%;'>${time}&nbsp;&middot;&nbsp;${size}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></div></html>"
-        component.horizontalTextPosition = SwingConstants.LEFT
+  private val sessionIcon = IconLoader.getIcon("/icons/rebased/claudeSessions.svg", ClaudeSessionsPanel::class.java)
+  private val dotIcon = IconLoader.getIcon("/icons/rebased/sessionDot.svg", ClaudeSessionsPanel::class.java)
+
+  // Native two-line row: leading session icon, bold title (+ trailing open-dot), gray meta line.
+  private inner class SessionRenderer : JPanel(BorderLayout()), ListCellRenderer<ClaudeSessionInfo> {
+    private val titleLine = SimpleColoredComponent()
+    private val metaLine = SimpleColoredComponent()
+
+    init {
+      isOpaque = true
+      val lines = JPanel(GridLayout(2, 1))
+      lines.isOpaque = false
+      lines.add(titleLine)
+      lines.add(metaLine)
+      titleLine.border = JBUI.Borders.emptyBottom(4)
+      add(lines, BorderLayout.CENTER)
+      border = JBUI.Borders.empty(10, 12, 10, 10)
+    }
+
+    override fun getListCellRendererComponent(list: JList<out ClaudeSessionInfo>, value: ClaudeSessionInfo?, index: Int, selected: Boolean, focused: Boolean): Component {
+      val info = value ?: return this
+      titleLine.clear()
+      metaLine.clear()
+      titleLine.icon = sessionIcon
+      titleLine.iconTextGap = 12
+      titleLine.append(info.title, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+      if (isSessionOpen(info.id)) {
+        titleLine.append("  ", SimpleTextAttributes.REGULAR_ATTRIBUTES, dotIcon)
       }
-      return component
+      val time = SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date(info.lastModified))
+      metaLine.border = JBUI.Borders.emptyLeft(28)
+      metaLine.append("$time · ${formatSize(info.sizeBytes)} · ${info.id.take(8)} · ${info.messageCount}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      background = if (selected) UIUtil.getListSelectionBackground(true) else list.background
+      foreground = list.foreground
+      return this
     }
   }
 
@@ -401,7 +443,4 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       bytes >= 1024L -> String.format("%.1fKB", bytes / 1024.0)
       else -> "${bytes}B"
     }
-
-  private fun escapeHtml(s: String): String =
-    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 }
