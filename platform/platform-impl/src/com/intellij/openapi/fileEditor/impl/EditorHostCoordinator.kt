@@ -22,9 +22,11 @@ import javax.swing.JPanel
 @Service(Service.Level.PROJECT)
 internal class EditorHostCoordinator(private val project: Project) : Disposable {
   private var adapter: EditorHostAdapter? = null
+  private var toolWindow: ToolWindow? = null
 
   @RequiresEdt
   fun bindVisibility(toolWindow: ToolWindow) {
+    this.toolWindow = toolWindow
     val connection = project.messageBus.connect(toolWindow.disposable)
     connection.subscribe(FileEditorManagerListener.Before.FILE_EDITOR_MANAGER, object : FileEditorManagerListener.Before {
       override fun beforeFileOpened(source: FileEditorManager, file: VirtualFile) {
@@ -59,6 +61,17 @@ internal class EditorHostCoordinator(private val project: Project) : Disposable 
     }
   }
 
+  // Entry-point guarantee: reopening an already-open, already-selected file produces no
+  // fileOpened/selectionChanged events, so show the host explicitly from openFile calls.
+  fun ensureShown() {
+    val tw = toolWindow ?: return
+    ToolWindowManager.getInstance(project).invokeLater {
+      if (FileEditorManager.getInstance(project).hasOpenFiles() && !tw.isVisible) {
+        tw.show(null)
+      }
+    }
+  }
+
   @RequiresEdt
   fun install(toolWindow: ToolWindow, fileEditorManager: FileEditorManagerImpl): Content {
     val mainSplitters = fileEditorManager.mainSplitters
@@ -83,6 +96,7 @@ internal class EditorHostCoordinator(private val project: Project) : Disposable 
 
   @RequiresEdt
   override fun dispose() {
+    toolWindow = null
     adapter?.let { currentAdapter ->
       currentAdapter.remove(currentAdapter.editorComponent)
     }
