@@ -51,11 +51,12 @@ internal class ClaudeSessionsToolWindowFactory : ToolWindowFactory, DumbAware {
   }
 }
 
-internal data class ClaudeSessionInfo(val id: String, val title: String, val lastModified: Long, val sizeBytes: Long)
+internal data class ClaudeSessionInfo(val id: String, val title: String, val lastModified: Long, val sizeBytes: Long, val messageCount: Int)
 
 internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWindowPanel(true) {
   private val listModel = DefaultListModel<ClaudeSessionInfo>()
   private val list = JBList(listModel)
+  @Volatile private var newestFirst = true
   private val summaryRegex = Regex("\"summary\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val aiTitleRegex = Regex("\"aiTitle\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val textRegex = Regex("\"type\"\\s*:\\s*\"text\"\\s*,\\s*\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
@@ -69,6 +70,8 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       override fun mouseClicked(e: MouseEvent) {
         val index = list.locationToIndex(e.point)
         if (index < 0 || listModel.size() <= index) return
+        val bounds = list.getCellBounds(index, index) ?: return
+        if (!bounds.contains(e.point)) return
         if (SwingUtilities.isLeftMouseButton(e)) {
           openSession(listModel[index])
         }
@@ -95,6 +98,16 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     group.add(object : AnAction("Refresh", "Rescan Claude sessions for this project", AllIcons.Actions.Refresh) {
       override fun actionPerformed(e: AnActionEvent) = refresh()
     })
+    group.add(object : AnAction(
+      if (newestFirst) "Newest Last" else "Newest First",
+      "Toggle sort order of the session list",
+      if (newestFirst) AllIcons.Actions.MoveDown else AllIcons.Actions.MoveUp
+    ) {
+      override fun actionPerformed(e: AnActionEvent) {
+        newestFirst = !newestFirst
+        refresh()
+      }
+    })
     return ActionManager.getInstance().createActionToolbar("ClaudeSessionsToolbar", group, true)
   }
 
@@ -112,14 +125,28 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     val dir = projectDir()
     if (!dir.isDirectory) return emptyList()
     val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: return emptyList()
-    return files.asSequence()
+    val sessions = files.asSequence()
       .filter { it.length() > 0 }
       .map { f ->
         val id = f.name.removeSuffix(".jsonl")
-        ClaudeSessionInfo(id, titleOverride(id) ?: extractTitle(f) ?: "(no title)", f.lastModified(), f.length())
+        ClaudeSessionInfo(id, titleOverride(id) ?: extractTitle(f) ?: "(no title)", f.lastModified(), f.length(), countMessages(f))
       }
       .sortedByDescending { it.lastModified }
       .toList()
+    return if (newestFirst) sessions else sessions.asReversed()
+  }
+
+  private fun countMessages(file: File): Int {
+    var count = 0
+    runCatching {
+      file.useLines { lines ->
+        for (line in lines) {
+          val type = typeRegex.find(line)?.groupValues?.get(1)
+          if (type == "user" || type == "assistant") count++
+        }
+      }
+    }
+    return count
   }
 
   private fun extractTitle(file: File): String? {
@@ -309,8 +336,9 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
         val time = SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date(info.lastModified))
         val size = formatSize(info.sizeBytes)
         val dot = if (isSessionOpen(info.id)) "<span style='color:#57965C;'>&#9679;</span>&nbsp;" else ""
-        component.text = "<html>$dot<b>${escapeHtml(info.title)}</b>&nbsp;&nbsp;" +
-                         "<span style='color:gray;'>${time}&nbsp;&middot;&nbsp;${size}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></html>"
+        val badge = "<span style='font-size:90%;color:#888888;'>&nbsp;${info.messageCount}msg</span>"
+        component.text = "<html><div style='padding:6px 8px;'>$dot<b>${escapeHtml(info.title)}</b>$badge<br>" +
+                         "<span style='color:gray;font-size:90%;'>${time}&nbsp;&middot;&nbsp;${size}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></div></html>"
         component.horizontalTextPosition = SwingConstants.LEFT
       }
       return component
