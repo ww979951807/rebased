@@ -5,6 +5,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataManager
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
@@ -18,10 +19,15 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.SimpleColoredComponent
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBRadioButton
 import com.intellij.ui.components.JBScrollPane
@@ -32,27 +38,28 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.ui.FormBuilder
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import org.jetbrains.plugins.terminal.ReworkedTabCommandRunner
+import org.jetbrains.plugins.terminal.TerminalEngine
+import org.jetbrains.plugins.terminal.TerminalOptionsProvider
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
-import java.awt.CardLayout
+import java.awt.BorderLayout
 import java.awt.Component
-import java.awt.Dimension
+import java.awt.CardLayout
 import java.awt.FlowLayout
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
-import java.awt.Insets
+import java.awt.GridLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
 import java.util.Locale
 import javax.swing.ButtonGroup
-import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JComponent
-import javax.swing.JLabel
 import javax.swing.JList
-import javax.swing.JMenuItem
 import javax.swing.JPanel
-import javax.swing.JPopupMenu
+import javax.swing.ListCellRenderer
 import javax.swing.JScrollPane
 import javax.swing.SwingUtilities
 
@@ -172,12 +179,22 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
     }
   }
 
+  // Follow the Terminal Engine setting: REWORKED goes through the frontend-module runner
+  // (Reworked engine renderer), anything else uses the classic API. Falls back to classic
+  // when the frontend service is unavailable.
   private fun executeInNewTab(tabName: String, workDir: String?, command: String) {
     ApplicationManager.getApplication().invokeLater {
-      runCatching {
-        val widget = TerminalToolWindowManager.getInstance(project)
-          .createLocalShellWidget(workDir, tabName) ?: return@invokeLater
-        widget.executeCommand(command)
+      var started = false
+      if (TerminalOptionsProvider.getInstance().terminalEngine == TerminalEngine.REWORKED) {
+        started = runCatching { project.getService(ReworkedTabCommandRunner::class.java) }
+          .getOrNull()?.createTabAndRunCommand(project, workDir, tabName, command) ?: false
+      }
+      if (!started) {
+        runCatching {
+          val widget = TerminalToolWindowManager.getInstance(project)
+            .createLocalShellWidget(workDir, tabName) ?: return@invokeLater
+          widget.executeCommand(command)
+        }
       }
       list.repaint()
     }
@@ -207,12 +224,12 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
   }
 
   private fun showContextMenu(e: MouseEvent, cfg: ScriptConfig) {
-    val menu = JPopupMenu()
-    menu.add(JMenuItem("Rerun").apply {
-      addActionListener { rerunScript(cfg) }
+    val group = DefaultActionGroup()
+    group.add(object : AnAction("Rerun", "Run this script in a new terminal tab", AllIcons.Actions.Rerun) {
+      override fun actionPerformed(e: AnActionEvent) = rerunScript(cfg)
     })
-    menu.add(JMenuItem("Edit").apply {
-      addActionListener {
+    group.add(object : AnAction("Edit", "Edit this script configuration", AllIcons.Actions.Edit) {
+      override fun actionPerformed(e: AnActionEvent) {
         val dialog = ScriptConfigDialog(project, cfg)
         if (dialog.showAndGet()) {
           val newCfg = dialog.getCfg()
@@ -223,36 +240,80 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
         }
       }
     })
-    menu.addSeparator()
-    menu.add(JMenuItem("Delete").apply {
-      addActionListener {
+    group.addSeparator()
+    group.add(object : AnAction("Delete", "Delete this script configuration", AllIcons.Actions.GC) {
+      override fun actionPerformed(e: AnActionEvent) {
         val answer = Messages.showYesNoDialog(project,
           "Delete script configuration \"${cfg.name}\"?",
           "Delete Script", Messages.getQuestionIcon())
-        if (answer != Messages.YES) return@addActionListener
+        if (answer != Messages.YES) return@actionPerformed
+        val content = TerminalToolWindowManager.getInstance(project).toolWindow?.contentManager?.contents
+          ?.firstOrNull { it.displayName == "script:${cfg.name}" }
+        if (content != null) {
+          runCatching { content.manager?.removeContent(content, true) }
+        }
         ScriptsConfigService.getInstance(project).configs().remove(cfg)
         reloadList()
       }
     })
-    menu.show(list, e.x, e.y)
+    val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+      null, group, DataManager.getInstance().getDataContext(list),
+      JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false)
+    popup.show(RelativePoint(e))
   }
 
-  private inner class ScriptRenderer : DefaultListCellRenderer() {
-    override fun getListCellRendererComponent(list: JList<*>, value: Any?, index: Int, selected: Boolean, focused: Boolean): Component {
-      val component = super.getListCellRendererComponent(list, value, index, selected, focused)
-      val cfg = value as? ScriptConfig
-      if (cfg != null && component is JLabel) {
-        val dot = if (isOpen(cfg)) "<span style='color:#57965C;'>&#9679;</span>&nbsp;" else ""
-        val preview = (if (cfg.isText) cfg.script.replace("\n", " ") else cfg.script).take(80)
-        component.text = "<html><div style='padding:6px 8px;'>$dot<b>${escapeHtml(cfg.name)}</b><br>" +
-                         "<span style='color:gray;font-size:90%;'>${escapeHtml(preview)}</span></div></html>"
-      }
-      return component
+  private val dotIcon = IconLoader.getIcon("/icons/rebased/sessionDot.svg", ScriptsPanel::class.java)
+  private val cmdIcon = IconLoader.getIcon("/icons/rebased/script-cmd.svg", ScriptsPanel::class.java)
+  private val ps1Icon = IconLoader.getIcon("/icons/rebased/script-ps1.svg", ScriptsPanel::class.java)
+  private val batIcon = IconLoader.getIcon("/icons/rebased/script-bat.svg", ScriptsPanel::class.java)
+  private val pyIcon = IconLoader.getIcon("/icons/rebased/script-py.svg", ScriptsPanel::class.java)
+  private val shIcon = IconLoader.getIcon("/icons/rebased/script-sh.svg", ScriptsPanel::class.java)
+  private val fileIcon = IconLoader.getIcon("/icons/rebased/script-file.svg", ScriptsPanel::class.java)
+
+  private fun iconFor(cfg: ScriptConfig) = when {
+    cfg.isText -> cmdIcon
+    else -> when (File(cfg.script).extension.lowercase(Locale.ROOT)) {
+      "ps1" -> ps1Icon
+      "bat", "cmd" -> batIcon
+      "py" -> pyIcon
+      "sh" -> shIcon
+      else -> fileIcon
     }
   }
 
-  private fun escapeHtml(s: String): String =
-    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+  // Native two-line row: leading script-type icon, bold name (+ trailing open-dot), gray command preview.
+  private inner class ScriptRenderer : JPanel(BorderLayout()), ListCellRenderer<ScriptConfig> {
+    private val titleLine = SimpleColoredComponent()
+    private val metaLine = SimpleColoredComponent()
+
+    init {
+      isOpaque = true
+      val lines = JPanel(GridLayout(2, 1))
+      lines.isOpaque = false
+      lines.add(titleLine)
+      lines.add(metaLine)
+      titleLine.border = JBUI.Borders.emptyBottom(4)
+      add(lines, BorderLayout.CENTER)
+      border = JBUI.Borders.empty(10, 12, 10, 10)
+    }
+
+    override fun getListCellRendererComponent(list: JList<out ScriptConfig>, value: ScriptConfig?, index: Int, selected: Boolean, focused: Boolean): Component {
+      val cfg = value ?: return this
+      titleLine.clear()
+      metaLine.clear()
+      titleLine.icon = iconFor(cfg)
+      titleLine.iconTextGap = 12
+      titleLine.append(cfg.name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+      if (isOpen(cfg)) {
+        titleLine.append("  ", SimpleTextAttributes.REGULAR_ATTRIBUTES, dotIcon)
+      }
+      metaLine.border = JBUI.Borders.emptyLeft(28)
+      metaLine.append(commandFor(cfg), SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      background = if (selected) UIUtil.getListSelectionBackground(true) else list.background
+      foreground = list.foreground
+      return this
+    }
+  }
 }
 
 internal class ScriptConfigDialog(private val project: Project, private val existing: ScriptConfig?) : DialogWrapper(project) {
@@ -275,7 +336,8 @@ internal class ScriptConfigDialog(private val project: Project, private val exis
     textRadio.addActionListener { syncTypeUi() }
 
     cards.add(fileField, "file")
-    cards.add(JScrollPane(textArea), "text")
+    cards.add(JBScrollPane(textArea), "text")
+    cards.border = JBUI.Borders.emptyTop(8)
 
     existing?.let {
       nameField.text = it.name
@@ -293,34 +355,17 @@ internal class ScriptConfigDialog(private val project: Project, private val exis
   }
 
   override fun createCenterPanel(): JComponent {
-    val panel = JPanel(GridBagLayout())
-    val c = GridBagConstraints()
-    c.insets = Insets(6, 8, 6, 8)
-    c.fill = GridBagConstraints.HORIZONTAL
-
-    c.gridx = 0; c.gridy = 0; c.weightx = 0.0
-    panel.add(JLabel("Name:"), c)
-    c.gridx = 1; c.gridy = 0; c.weightx = 1.0
-    panel.add(nameField, c)
-
-    c.gridx = 0; c.gridy = 1; c.weightx = 0.0; c.fill = GridBagConstraints.NONE
-    panel.add(JLabel("Type:"), c)
-    c.gridx = 1; c.gridy = 1
-    panel.add(JPanel(FlowLayout(FlowLayout.LEFT)).apply { add(fileRadio); add(textRadio) }, c)
-    c.fill = GridBagConstraints.HORIZONTAL
-
-    c.gridx = 0; c.gridy = 2; c.gridwidth = 2; c.weightx = 1.0; c.weighty = 1.0
-    c.fill = GridBagConstraints.BOTH
-    panel.add(cards, c)
-    c.gridwidth = 1; c.weighty = 0.0; c.fill = GridBagConstraints.HORIZONTAL
-
-    c.gridx = 0; c.gridy = 3; c.weightx = 0.0
-    panel.add(JLabel("Working directory:"), c)
-    c.gridx = 1; c.gridy = 3; c.weightx = 1.0
-    panel.add(workDirField, c)
-
-    panel.preferredSize = Dimension(560, 320)
-    return panel
+    val typePanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
+      isOpaque = false
+      add(fileRadio)
+      add(textRadio)
+    }
+    return FormBuilder.createFormBuilder()
+      .addLabeledComponent("Name:", nameField)
+      .addLabeledComponent("Type:", typePanel)
+      .addComponent(cards)
+      .addLabeledComponent("Working directory:", workDirField)
+      .panel
   }
 
   override fun doValidate(): ValidationInfo? {
