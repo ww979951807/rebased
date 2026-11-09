@@ -5,7 +5,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.DataManager
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
@@ -256,8 +256,11 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
         reloadList()
       }
     })
+    val dataContext = object : DataContext {
+      override fun getData(dataId: String): Any? = null
+    }
     val popup = JBPopupFactory.getInstance().createActionGroupPopup(
-      null, group, DataManager.getInstance().getDataContext(list),
+      null, group, dataContext,
       JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false)
     popup.show(RelativePoint(e))
   }
