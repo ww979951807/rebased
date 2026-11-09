@@ -25,9 +25,22 @@ internal class EditorHostCoordinator(private val project: Project) : Disposable 
   @RequiresEdt
   fun bindVisibility(toolWindow: ToolWindow) {
     val connection = project.messageBus.connect(toolWindow.disposable)
+    connection.subscribe(FileEditorManagerListener.Before.FILE_EDITOR_MANAGER, object : FileEditorManagerListener.Before {
+      override fun beforeFileOpened(source: FileEditorManager, file: VirtualFile) {
+        if (!toolWindow.isVisible) {
+          toolWindow.show(null)
+        }
+      }
+    })
     connection.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
       override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
         if (!toolWindow.isVisible) {
+          toolWindow.show(null)
+        }
+      }
+
+      override fun selectionChanged(event: FileEditorManagerListener.FileEditorManagerEvent) {
+        if (event.manager.hasOpenFiles() && !toolWindow.isVisible) {
           toolWindow.show(null)
         }
       }
