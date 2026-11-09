@@ -1032,6 +1032,10 @@ open class FileEditorManagerImpl(
   final override fun openFile(file: VirtualFile, window: EditorWindow?, options: FileEditorOpenOptions): FileEditorComposite {
     require(file.isValid) { "file is not valid: $file" }
 
+    // Rebased: the editor area is hosted in the "File Editor" tool window; make sure it shows
+    // on every explicit open, including reused editors whose selection does not change.
+    project.getServiceIfCreated(EditorHostCoordinator::class.java)?.ensureShown()
+
     var windowToOpenIn = window
     if (windowToOpenIn != null && windowToOpenIn.isDisposed) {
       windowToOpenIn = null
@@ -1120,6 +1124,7 @@ open class FileEditorManagerImpl(
     // an explicitly requested window takes precedence over the open mode; a disposed window falls back to the open mode
     val requestedWindow = options.window?.takeIf { !it.isDisposed }
     if (requestedWindow == null) {
+      project.getServiceIfCreated(EditorHostCoordinator::class.java)?.ensureShown()
       val mode = options.openMode
       if (mode == OpenMode.NEW_WINDOW) {
         return withContext(Dispatchers.EDT) {
