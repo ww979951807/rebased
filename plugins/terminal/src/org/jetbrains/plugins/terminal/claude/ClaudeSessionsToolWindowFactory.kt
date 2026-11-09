@@ -51,12 +51,13 @@ internal class ClaudeSessionsToolWindowFactory : ToolWindowFactory, DumbAware {
   }
 }
 
-internal data class ClaudeSessionInfo(val id: String, val title: String, val lastModified: Long)
+internal data class ClaudeSessionInfo(val id: String, val title: String, val lastModified: Long, val sizeBytes: Long)
 
 internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWindowPanel(true) {
   private val listModel = DefaultListModel<ClaudeSessionInfo>()
   private val list = JBList(listModel)
   private val summaryRegex = Regex("\"summary\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+  private val aiTitleRegex = Regex("\"aiTitle\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val textRegex = Regex("\"type\"\\s*:\\s*\"text\"\\s*,\\s*\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val typeRegex = Regex("\"type\"\\s*:\\s*\"(\\w+)\"")
 
@@ -115,18 +116,25 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       .filter { it.length() > 0 }
       .map { f ->
         val id = f.name.removeSuffix(".jsonl")
-        ClaudeSessionInfo(id, titleOverride(id) ?: extractTitle(f) ?: "(no title)", f.lastModified())
+        ClaudeSessionInfo(id, titleOverride(id) ?: extractTitle(f) ?: "(no title)", f.lastModified(), f.length())
       }
       .sortedByDescending { it.lastModified }
       .toList()
   }
 
   private fun extractTitle(file: File): String? {
+    var aiTitle: String? = null
     var firstUser: String? = null
     runCatching {
       file.useLines { lines ->
         for (line in lines.take(300)) {
           val type = typeRegex.find(line)?.groupValues?.get(1)
+          if (aiTitle == null && type == "ai-title") {
+            val s = aiTitleRegex.find(line)?.groupValues?.get(1)
+            if (!s.isNullOrBlank()) {
+              aiTitle = unescape(s).trim().replace(Regex("\\s+"), " ").take(60)
+            }
+          }
           if (type == "summary") {
             val s = summaryRegex.find(line)?.groupValues?.get(1)
             if (!s.isNullOrBlank()) return unescape(s).trim().replace(Regex("\\s+"), " ").take(60)
@@ -144,7 +152,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
         }
       }
     }
-    return firstUser
+    return aiTitle ?: firstUser
   }
 
   private fun stringContent(line: String): String? {
@@ -298,15 +306,23 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       val component = super.getListCellRendererComponent(list, value, index, selected, focused)
       val info = value as? ClaudeSessionInfo
       if (info != null && component is JLabel) {
-        val time = SimpleDateFormat("MM-dd HH:mm").format(Date(info.lastModified))
+        val time = SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date(info.lastModified))
+        val size = formatSize(info.sizeBytes)
         val dot = if (isSessionOpen(info.id)) "<span style='color:#57965C;'>&#9679;</span>&nbsp;" else ""
         component.text = "<html>$dot<b>${escapeHtml(info.title)}</b>&nbsp;&nbsp;" +
-                         "<span style='color:gray;'>${time}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></html>"
+                         "<span style='color:gray;'>${time}&nbsp;&middot;&nbsp;${size}&nbsp;&middot;&nbsp;${info.id.take(8)}</span></html>"
         component.horizontalTextPosition = SwingConstants.LEFT
       }
       return component
     }
   }
+
+  private fun formatSize(bytes: Long): String =
+    when {
+      bytes >= 1048576L -> String.format("%.1fMB", bytes / 1048576.0)
+      bytes >= 1024L -> String.format("%.1fKB", bytes / 1024.0)
+      else -> "${bytes}B"
+    }
 
   private fun escapeHtml(s: String): String =
     s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
