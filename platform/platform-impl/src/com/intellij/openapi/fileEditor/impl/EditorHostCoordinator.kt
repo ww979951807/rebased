@@ -5,6 +5,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -39,7 +40,7 @@ internal class EditorHostCoordinator(private val project: Project) : Disposable 
         }
       }
 
-      override fun selectionChanged(event: FileEditorManagerListener.FileEditorManagerEvent) {
+      override fun selectionChanged(event: FileEditorManagerEvent) {
         if (event.manager.hasOpenFiles() && !toolWindow.isVisible) {
           toolWindow.show(null)
         }
