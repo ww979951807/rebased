@@ -28,6 +28,9 @@ import java.awt.event.MouseEvent
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JList
@@ -57,7 +60,6 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   private val listModel = DefaultListModel<ClaudeSessionInfo>()
   private val list = JBList(listModel)
   @Volatile private var newestFirst = true
-  private val summaryRegex = Regex("\"summary\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val aiTitleRegex = Regex("\"aiTitle\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val textRegex = Regex("\"type\"\\s*:\\s*\"text\"\\s*,\\s*\"text\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
   private val typeRegex = Regex("\"type\"\\s*:\\s*\"(\\w+)\"")
@@ -93,7 +95,10 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   private fun buildToolbar(): com.intellij.openapi.actionSystem.ActionToolbar {
     val group = DefaultActionGroup()
     group.add(object : AnAction("New Session", "Start a new Claude session", AllIcons.General.Add) {
-      override fun actionPerformed(e: AnActionEvent) = openClaude("claude:new", "claude")
+      override fun actionPerformed(e: AnActionEvent) {
+        openClaude("claude:new", "claude")
+        watchForNewSessionFile()
+      }
     })
     group.add(object : AnAction("Refresh", "Rescan Claude sessions for this project", AllIcons.Actions.Refresh) {
       override fun actionPerformed(e: AnActionEvent) = refresh()
@@ -101,7 +106,7 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     group.add(object : AnAction(
       if (newestFirst) "Newest Last" else "Newest First",
       "Toggle sort order of the session list",
-      if (newestFirst) AllIcons.Actions.MoveDown else AllIcons.Actions.MoveUp
+      AllIcons.Ide.UpDown
     ) {
       override fun actionPerformed(e: AnActionEvent) {
         newestFirst = !newestFirst
@@ -154,25 +159,25 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     var firstUser: String? = null
     runCatching {
       file.useLines { lines ->
-        for (line in lines.take(300)) {
-          val type = typeRegex.find(line)?.groupValues?.get(1)
-          if (aiTitle == null && type == "ai-title") {
+        for (line in lines) {
+          // ai-title lines: {"type":"ai-title","aiTitle":"..."} — detect by key presence, the
+          // typeRegex (\w+) cannot match the hyphenated "ai-title" value. Take the LAST one.
+          if (line.contains("\"aiTitle\"")) {
             val s = aiTitleRegex.find(line)?.groupValues?.get(1)
             if (!s.isNullOrBlank()) {
               aiTitle = unescape(s).trim().replace(Regex("\\s+"), " ").take(60)
             }
           }
-          if (type == "summary") {
-            val s = summaryRegex.find(line)?.groupValues?.get(1)
-            if (!s.isNullOrBlank()) return unescape(s).trim().replace(Regex("\\s+"), " ").take(60)
-          }
-          if (firstUser == null && type == "user") {
-            val raw = textRegex.find(line)?.groupValues?.get(1)
-              ?: stringContent(line)
-            if (raw != null) {
-              val text = unescape(raw).trim().replace(Regex("\\s+"), " ")
-              if (text.isNotEmpty() && !text.startsWith("<")) {
-                firstUser = text.take(60)
+          if (firstUser == null) {
+            val type = typeRegex.find(line)?.groupValues?.get(1)
+            if (type == "user") {
+              val raw = textRegex.find(line)?.groupValues?.get(1)
+                ?: stringContent(line)
+              if (raw != null) {
+                val text = unescape(raw).trim().replace(Regex("\\s+"), " ")
+                if (text.isNotEmpty() && !text.startsWith("<") && !text.startsWith("[")) {
+                  firstUser = text.take(60)
+                }
               }
             }
           }
@@ -254,10 +259,55 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
     }
   }
 
+  private fun rerunSession(info: ClaudeSessionInfo) {
+    val tabName = "claude:${info.id.take(8)}"
+    val toolWindow = TerminalToolWindowManager.getInstance(project).toolWindow
+    val existing = toolWindow?.contentManager?.contents?.firstOrNull { it.displayName == tabName }
+    if (existing != null) {
+      runCatching { existing.manager?.removeContent(existing, true) }
+    }
+    ApplicationManager.getApplication().invokeLater {
+      runCatching {
+        val widget: ShellTerminalWidget = TerminalToolWindowManager.getInstance(project)
+          .createLocalShellWidget(project.basePath, tabName) ?: return@invokeLater
+        widget.executeCommand("claude --resume ${info.id}")
+      }
+      list.repaint()
+    }
+  }
+
+  @Volatile private var newSessionWatch: ScheduledFuture<*>? = null
+
+  // After starting a new session, poll until the session jsonl appears, refresh the list and
+  // rename the "claude:new" tab to "claude:<shortId>" so the open-session dot lights up.
+  private fun watchForNewSessionFile() {
+    val clickTime = System.currentTimeMillis()
+    val counter = AtomicInteger(0)
+    newSessionWatch?.cancel(false)
+    newSessionWatch = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay({
+      SwingUtilities.invokeLater {
+        val n = counter.incrementAndGet()
+        val tw = TerminalToolWindowManager.getInstance(project).toolWindow
+        val content = tw?.contentManager?.contents?.firstOrNull { it.displayName == "claude:new" }
+        val fresh = projectDir().listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
+          ?.filter { it.lastModified() > clickTime }
+          ?.maxByOrNull { it.lastModified() }
+        if (fresh != null && content != null) {
+          content.setDisplayName("claude:${fresh.name.removeSuffix(".jsonl").take(8)}")
+        }
+        if (content == null || fresh != null || n >= 40) {
+          newSessionWatch?.cancel(false)
+          newSessionWatch = null
+        }
+        refresh()
+      }
+    }, 3, 3, TimeUnit.SECONDS)
+  }
+
   private fun showContextMenu(e: MouseEvent, info: ClaudeSessionInfo) {
     val menu = JPopupMenu()
-    menu.add(JMenuItem("Open Session").apply {
-      addActionListener { openSession(info) }
+    menu.add(JMenuItem("Rerun").apply {
+      addActionListener { rerunSession(info) }
     })
     menu.add(JMenuItem("Rename").apply {
       addActionListener {
