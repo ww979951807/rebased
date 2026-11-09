@@ -58,6 +58,8 @@
   <extensions defaultExtensionNs="com.intellij">
     <projectService serviceInterface="com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTabsManager"
                     serviceImplementation="com.intellij.terminal.frontend.toolwindow.impl.TerminalToolWindowTabsManagerImpl"/>
+    <projectService serviceInterface="org.jetbrains.plugins.terminal.ReworkedTabCommandRunner"
+                    serviceImplementation="com.intellij.terminal.frontend.toolwindow.impl.ReworkedTabCommandRunnerImpl"/>
     <toolWindowEditorTabSupport key="Terminal"
                                 implementationClass="com.intellij.terminal.frontend.TerminalToolWindowEditorTabSupport"/>
     <toolWindowEditorTabPersistenceProvider key="Terminal"
