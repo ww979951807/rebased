@@ -4,8 +4,10 @@
                 factoryClass="org.jetbrains.plugins.terminal.TerminalToolWindowFactory"
                 secondary="false"
                 canCloseContents="true"/>
-    <toolWindow id="Claude Sessions" anchor="right" icon="/icons/rebased/claudeSessions.svg"
+    <toolWindow id="Claude Sessions" anchor="left" order="after Version Control" icon="/icons/rebased/claudeSessions.svg"
                 showStripeButton="true" factoryClass="org.jetbrains.plugins.terminal.claude.ClaudeSessionsToolWindowFactory"/>
+    <toolWindow id="Scripts" anchor="left" order="after Claude Sessions" icon="AllIcons.Toolwindows.ToolWindowRun"
+                showStripeButton="true" factoryClass="org.jetbrains.plugins.terminal.scripts.ScriptsToolWindowFactory"/>
     <fileEditorProvider id="classic-terminal-session-editor"
                         implementation="org.jetbrains.plugins.terminal.vfs.ClassicTerminalSessionEditorProvider"/>
 
