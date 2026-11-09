@@ -32,6 +32,7 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
+import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.awt.CardLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -48,6 +49,7 @@ import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JList
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
@@ -154,7 +156,7 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
     TerminalToolWindowManager.getInstance(project).toolWindow?.contentManager?.contents
       ?.firstOrNull { it.displayName == "script:${cfg.name}" } != null
 
-  private fun workDirOf(cfg: ScriptConfig): String =
+  private fun workDirOf(cfg: ScriptConfig): String? =
     cfg.workDir.trim().ifEmpty { project.basePath }
 
   private fun commandFor(cfg: ScriptConfig): String {
@@ -253,7 +255,7 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
     s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 }
 
-internal class ScriptConfigDialog(project: Project, private val existing: ScriptConfig?) : DialogWrapper(project) {
+internal class ScriptConfigDialog(private val project: Project, private val existing: ScriptConfig?) : DialogWrapper(project) {
   private val nameField = JBTextField()
   private val fileRadio = JBRadioButton("Script file", true)
   private val textRadio = JBRadioButton("Script text")
