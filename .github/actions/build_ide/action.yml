@@ -21,4 +21,4 @@ runs:
         product: ${{inputs.product}}
         version: ${{inputs.version}}
       # language=bash
-      run: docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version
+      run: docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version -Dsystem.intellij.build.skip.build.steps=windows_exe_installer
