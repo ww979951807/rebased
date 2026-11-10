@@ -13,6 +13,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.IdeEventQueue
 import com.intellij.ide.ui.UISettings
 import com.intellij.ide.ui.UISettingsListener
+import com.intellij.ide.lightEdit.LightEdit
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
@@ -231,6 +232,12 @@ open class EditorsSplitters internal constructor(
 
   private var emptyStatePresentationReady: Boolean = true
 
+  /** Rebased: whether this editor area disappears entirely when it holds no open file. */
+  internal val hideEditorAreaWhenEmpty: Boolean =
+    !ApplicationManager.getApplication().isUnitTestMode &&
+    !ApplicationManager.getApplication().isHeadlessEnvironment &&
+    !LightEdit.owns(manager.project)
+
   /**
    * How many times presentation of the empty state has been held back while project open is still opening editors of its own
    * (see `IdeProjectFrameAllocator`). The empty state is prepared under a hold, but not shown.
@@ -273,7 +280,7 @@ open class EditorsSplitters internal constructor(
 
   private fun showEmptyText(): Boolean = (currentWindow?.files() ?: emptySequence()).none()
 
-  private fun shouldShowRichEmptyState(): Boolean = showEmptyText() && emptyStatePresentationReady
+  private fun shouldShowRichEmptyState(): Boolean = showEmptyText() && emptyStatePresentationReady && !hideEditorAreaWhenEmpty
 
   private fun shouldDelayEmptyStatePresentation(state: EditorSplitterState): Boolean = state.hasFileEntries && shouldReopenEditorsOnStartup()
 
@@ -1135,6 +1142,20 @@ open class EditorsSplitters internal constructor(
   @Internal
   fun updateEmptyStateComponent() {
     emptyStateComponentController.update()
+    updateOnDemandVisibility()
+  }
+
+  /**
+   * Rebased: on-demand central editor area. An editor area with no open file is hidden altogether
+   * (the enclosing ThreeComponentsSplitter gives its space to the tool windows), and reappears
+   * as soon as a file (or diff) is opened in it. Only the main editor area of an interactive,
+   * non-lightedit project participates; other splitters (search results popups, previews) keep the stock behavior.
+   */
+  private fun updateOnDemandVisibility() {
+    // Rebased: the main editor area is now hosted inside the "File Editor" tool window, which owns its
+    // visibility (stripe-button toggle, show on file open, hide on last close). Hiding the splitters
+    // component itself would only blank out the visible tool window, so this is intentionally inert now;
+    // the rich empty state stays suppressed via shouldShowRichEmptyState().
   }
 
   private fun rebuildEmptyStateComponent() {
