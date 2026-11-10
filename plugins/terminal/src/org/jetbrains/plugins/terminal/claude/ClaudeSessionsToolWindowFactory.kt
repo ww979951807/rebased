@@ -45,6 +45,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.DefaultListModel
+import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
@@ -85,7 +86,15 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
         val bounds = list.getCellBounds(index, index) ?: return
         if (!bounds.contains(e.point)) return
         if (SwingUtilities.isLeftMouseButton(e)) {
-          openSession(listModel[index])
+          val info = listModel[index]
+          if (e.clickCount >= 2) {
+            // Double click: open the session (switch to its tab or start it in a new one).
+            openSession(info)
+          }
+          else if (e.clickCount == 1) {
+            // Single click: only switch to the tab when it is already open, never start anything.
+            switchToOpenTab(info)
+          }
         }
         else if (SwingUtilities.isRightMouseButton(e)) {
           list.selectedIndex = index
@@ -250,6 +259,13 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
 
   private fun openSession(info: ClaudeSessionInfo) = openClaude("claude:${info.id.take(8)}", "claude --resume ${info.id}")
 
+  // Single click: switch to the session's terminal tab only when it is already open.
+  private fun switchToOpenTab(info: ClaudeSessionInfo) {
+    val content = openClaudeContent(info.id) ?: return
+    val tw = TerminalToolWindowManager.getInstance(project).toolWindow ?: return
+    tw.activate { tw.contentManager.setSelectedContent(content, true) }
+  }
+
   private fun openClaude(tabName: String, command: String) {
     val toolWindow = TerminalToolWindowManager.getInstance(project).toolWindow
     val existing = toolWindow?.contentManager?.contents?.firstOrNull { it.displayName == tabName }
@@ -405,10 +421,15 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
   private val sessionIcon = IconLoader.getIcon("/icons/rebased/claudeSessions.svg", ClaudeSessionsPanel::class.java)
   private val dotIcon = IconLoader.getIcon("/icons/rebased/sessionDot.svg", ClaudeSessionsPanel::class.java)
 
-  // Native two-line row: leading session icon, bold title (+ trailing open-dot), gray meta line.
+  // Native two-line row: leading session icon, bold title, gray meta line, green open-dot at
+  // the row end. The panel stays opaque with an explicit background: WideSelectionListUI
+  // spreads the renderer background across the FULL row width, which gives the prototype's
+  // edge-to-edge selection. Selection is read from the model — the renderer callback may
+  // pass selected=false even for the selected row.
   private inner class SessionRenderer : JPanel(BorderLayout()), ListCellRenderer<ClaudeSessionInfo> {
     private val titleLine = SimpleColoredComponent()
     private val metaLine = SimpleColoredComponent()
+    private val dotLabel = JLabel(dotIcon)
 
     init {
       isOpaque = true
@@ -418,6 +439,8 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       lines.add(metaLine)
       titleLine.border = JBUI.Borders.emptyBottom(4)
       add(lines, BorderLayout.CENTER)
+      dotLabel.border = JBUI.Borders.empty(0, 12, 0, 2)
+      add(dotLabel, BorderLayout.EAST)
       border = JBUI.Borders.empty(10, 12, 10, 10)
     }
 
@@ -428,14 +451,13 @@ internal class ClaudeSessionsPanel(private val project: Project) : SimpleToolWin
       titleLine.icon = sessionIcon
       titleLine.iconTextGap = 12
       titleLine.append(info.title, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
-      if (isSessionOpen(info.id)) {
-        titleLine.append("  ", SimpleTextAttributes.REGULAR_ATTRIBUTES, dotIcon)
-      }
       val time = SimpleDateFormat("yyyy-MM-dd HH:mm").format(Date(info.lastModified))
       metaLine.border = JBUI.Borders.emptyLeft(28)
       metaLine.append("$time · ${formatSize(info.sizeBytes)} · ${info.id.take(8)} · ${info.messageCount}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-      background = if (selected) UIUtil.getListSelectionBackground(true) else list.background
+      val sel = selected || list.isSelectedIndex(index)
+      background = if (sel) UIUtil.getListSelectionBackground(true) else list.background
       foreground = list.foreground
+      dotLabel.isVisible = isSessionOpen(info.id)
       return this
     }
   }
