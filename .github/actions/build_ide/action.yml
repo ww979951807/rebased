@@ -3,8 +3,9 @@ inputs:
     description: 'a product, available options: intellij_idea, pycharm'
     required: true
   version:
-    description: 'build number'
-    required: true
+    description: 'build number; leave empty to read build.txt'
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -21,4 +22,9 @@ runs:
         product: ${{inputs.product}}
         version: ${{inputs.version}}
       # language=bash
-      run: docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version -Dsystem.intellij.build.skip.build.steps=windows_exe_installer
+      run: |
+        if [ -z "$version" ]; then
+          version="$(cat build.txt)"
+        fi
+        echo "version: $version"
+        docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version -Dintellij.build.skip.build.steps=windows_exe_installer,mac_artifacts,linux_artifacts,sources_archive
