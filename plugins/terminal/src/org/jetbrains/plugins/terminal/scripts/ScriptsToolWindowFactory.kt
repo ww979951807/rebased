@@ -47,7 +47,6 @@ import org.jetbrains.plugins.terminal.TerminalOptionsProvider
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.awt.BorderLayout
 import java.awt.Component
-import java.awt.CardLayout
 import java.awt.FlowLayout
 import java.awt.GridLayout
 import java.awt.event.MouseAdapter
@@ -57,6 +56,7 @@ import java.util.Locale
 import javax.swing.ButtonGroup
 import javax.swing.DefaultListModel
 import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
@@ -121,7 +121,15 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
         val bounds = list.getCellBounds(index, index) ?: return
         if (!bounds.contains(e.point)) return
         if (SwingUtilities.isLeftMouseButton(e)) {
-          runOrSwitch(listModel[index])
+          val cfg = listModel[index]
+          if (e.clickCount >= 2) {
+            // Double click: run the script (switch to its tab or start it in a new one).
+            runOrSwitch(cfg)
+          }
+          else if (e.clickCount == 1) {
+            // Single click: only switch to the tab when it is already open, never run anything.
+            switchToOpenTab(cfg)
+          }
         }
         else if (SwingUtilities.isRightMouseButton(e)) {
           list.selectedIndex = index
@@ -213,6 +221,13 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
     executeInNewTab(tabName, workDirOf(cfg), commandFor(cfg))
   }
 
+  // Single click: switch to the script's terminal tab only when it is already open.
+  private fun switchToOpenTab(cfg: ScriptConfig) {
+    val tw = TerminalToolWindowManager.getInstance(project).toolWindow ?: return
+    val content = tw.contentManager.contents.firstOrNull { it.displayName == tabNameOf(cfg) } ?: return
+    tw.activate { tw.contentManager.setSelectedContent(content, true) }
+  }
+
   private fun rerunScript(cfg: ScriptConfig) {
     val tabName = "script:${cfg.name}"
     val tw = TerminalToolWindowManager.getInstance(project).toolWindow
@@ -284,10 +299,13 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
     }
   }
 
-  // Native two-line row: leading script-type icon, bold name (+ trailing open-dot), gray command preview.
+  // Native two-line row: leading script-type icon, bold name, gray command preview, green
+  // open-dot at the row end. Opaque + explicit background so the list spreads the selection
+  // across the FULL row width; selection read from the model (the callback may lie).
   private inner class ScriptRenderer : JPanel(BorderLayout()), ListCellRenderer<ScriptConfig> {
     private val titleLine = SimpleColoredComponent()
     private val metaLine = SimpleColoredComponent()
+    private val dotLabel = JLabel(dotIcon)
 
     init {
       isOpaque = true
@@ -297,6 +315,8 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
       lines.add(metaLine)
       titleLine.border = JBUI.Borders.emptyBottom(4)
       add(lines, BorderLayout.CENTER)
+      dotLabel.border = JBUI.Borders.empty(0, 12, 0, 2)
+      add(dotLabel, BorderLayout.EAST)
       border = JBUI.Borders.empty(10, 12, 10, 10)
     }
 
@@ -307,13 +327,12 @@ internal class ScriptsPanel(private val project: Project) : SimpleToolWindowPane
       titleLine.icon = iconFor(cfg)
       titleLine.iconTextGap = 12
       titleLine.append(cfg.name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
-      if (isOpen(cfg)) {
-        titleLine.append("  ", SimpleTextAttributes.REGULAR_ATTRIBUTES, dotIcon)
-      }
       metaLine.border = JBUI.Borders.emptyLeft(28)
       metaLine.append(commandFor(cfg), SimpleTextAttributes.GRAYED_ATTRIBUTES)
-      background = if (selected) UIUtil.getListSelectionBackground(true) else list.background
+      val sel = selected || list.isSelectedIndex(index)
+      background = if (sel) UIUtil.getListSelectionBackground(true) else list.background
       foreground = list.foreground
+      dotLabel.isVisible = isOpen(cfg)
       return this
     }
   }
@@ -326,7 +345,7 @@ internal class ScriptConfigDialog(private val project: Project, private val exis
   private val fileField = TextFieldWithBrowseButton()
   private val textArea = JBTextArea(8, 46)
   private val workDirField = TextFieldWithBrowseButton()
-  private val cards = JPanel(CardLayout())
+  private val cards = JPanel(BorderLayout())
 
   init {
     title = if (existing == null) "Add Script Configuration" else "Edit Script Configuration"
@@ -338,8 +357,9 @@ internal class ScriptConfigDialog(private val project: Project, private val exis
     fileRadio.addActionListener { syncTypeUi() }
     textRadio.addActionListener { syncTypeUi() }
 
-    cards.add(fileField, "file")
-    cards.add(JBScrollPane(textArea), "text")
+    // Only the current field stays in the layout, so the dialog is as tall as that field
+    // requires (a CardLayout would stay as tall as the 8-row text area even in file mode).
+    cards.add(fileField, BorderLayout.CENTER)
     cards.border = JBUI.Borders.emptyTop(8)
 
     existing?.let {
@@ -354,7 +374,13 @@ internal class ScriptConfigDialog(private val project: Project, private val exis
   }
 
   private fun syncTypeUi() {
-    (cards.layout as CardLayout).show(cards, if (fileRadio.isSelected) "file" else "text")
+    cards.removeAll()
+    cards.add(if (fileRadio.isSelected) fileField else JBScrollPane(textArea), BorderLayout.CENTER)
+    cards.revalidate()
+    cards.repaint()
+    if (isVisible) {
+      SwingUtilities.getWindowAncestor(cards)?.pack()
+    }
   }
 
   override fun createCenterPanel(): JComponent {
