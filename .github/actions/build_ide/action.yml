@@ -27,4 +27,4 @@ runs:
           version="$(cat build.txt)"
         fi
         echo "version: $version"
-        docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version
+        docker run --rm --user "$(id -u)" --volume "${PWD}:/community" $product -Dbuild.version=$version -Dintellij.build.skip.build.steps=windows_exe_installer,mac_artifacts,linux_artifacts,sources_archive

@@ -16,38 +16,3 @@ jobs:
       artifacts_dir: out/idea-ce/artifacts
       product: intellij_idea
       version: ${{ inputs.version }}
-
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs:
-      - build
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/download-artifact@v4.1.8
-
-      - name: Create Release
-        # the maintainer said they archived this action because "there are much better alternatives these days"
-        # but i have yet to find a single alternative that works the way i want (automatically creates the tag)
-        uses: marvinpinto/action-automatic-releases@919008cf3f741b179569b7a6fb4d8860689ab7f0 # zizmor: ignore[archived-uses]
-        with:
-          title: ${{ needs.build.outputs.version }}
-          automatic_release_tag: ${{ needs.build.outputs.version }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: false
-          draft: true
-          # TODO: this is a complete fucking nightmare to maintain... we need to very carefully fine tune this list of globs so that
-          # all the necessary assets are included, while also preventing any unsigned windows assets from being uploaded. we also need to
-          # prevent any duplicates from being uploaded (ie. the same file being matched from multiple artifacts), otherwise the action
-          # will crash... i fucking hate github actions so much
-          files: |
-            **/*.tar.gz
-            **/*.AppImage
-            **/*.zsync
-            linux*/*.spdx.json
-            windows-signed-*/rebased*.exe
-            windows-signed-*/*.spdx.json
-            **/*.win.zip
-            **/*.win.zip.spdx.json
-            **/*.dmg
-            mac*/*.spdx.json
