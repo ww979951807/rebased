@@ -13,7 +13,8 @@ on:
         required: true
       version:
         type: string
-        required: true
+        required: false
+        default: ''
 
 permissions: {}
 
@@ -21,12 +22,21 @@ jobs:
   distributions:
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.resolve-version.outputs.version }}
       unsigned-windows-artifact-id-x64: ${{ steps.upload-unsigned-artifact-x64.outputs.artifact-id }}
       unsigned-windows-artifact-id-aarch64: ${{ steps.upload-unsigned-artifact-aarch64.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: resolve version
+        id: resolve-version
+        shell: bash
+        run: |
+          v="${{ inputs.version }}"
+          if [ -z "$v" ]; then v="$(cat build.txt)"; fi
+          echo "version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/build_ide
         with:
           product: ${{inputs.product}}
@@ -169,8 +179,11 @@ jobs:
           Terminal=false
           StartupWMClass=jetbrains-rebased
           StartupNotify=true
-          X-AppImage-Version=${{inputs.version}}
+          X-AppImage-Version=__VERSION__
           EOF
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="$(cat build.txt)"; fi
+          sed -i "s/__VERSION__/$VERSION/" appdir/rebased.desktop
           
           # icon
           ln -s usr/bin/rebased.png appdir/rebased.png
